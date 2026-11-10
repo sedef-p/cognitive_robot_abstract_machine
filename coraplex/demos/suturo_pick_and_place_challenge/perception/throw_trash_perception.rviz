@@ -1,0 +1,88 @@
+Panels:
+  - Class: rviz_common/Displays
+    Name: Displays
+Visualization Manager:
+  Class: ""
+  Displays:
+    - Class: rviz_default_plugins/Grid
+      Name: Grid
+      Enabled: true
+      Reference Frame: <Fixed Frame>
+      Cell Size: 1
+      Plane Cell Count: 10
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: World
+      Enabled: true
+      Namespaces: {}
+      Topic:
+        Value: /semworld/viz_marker
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Camera scene points
+      Enabled: true
+      Topic:
+        Value: /throw_trash_perception/scene_points
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Color Transformer: RGB8
+      Style: Points
+      Size (Pixels): 3
+      Size (m): 0.01
+      Alpha: 1
+      Decay Time: 0
+      Position Transformer: XYZ
+      Use Fixed Frame: true
+      Value: true
+    - Class: rviz_default_plugins/PointCloud2
+      Name: Found object points
+      Enabled: true
+      Topic:
+        Value: /throw_trash_perception/object_points
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+      Color Transformer: RGB8
+      Style: Points
+      Size (Pixels): 5
+      Size (m): 0.01
+      Alpha: 1
+      Decay Time: 0
+      Position Transformer: XYZ
+      Use Fixed Frame: true
+      Value: true
+  Enabled: true
+  Global Options:
+    Background Color: 48; 48; 48
+    Fixed Frame: root
+    Frame Rate: 30
+  Name: root
+  Tools:
+    - Class: rviz_default_plugins/MoveCamera
+    - Class: rviz_default_plugins/Interact
+      Hide Inactive Objects: true
+  Value: true
+  Views:
+    Current:
+      Class: rviz_default_plugins/Orbit
+      Name: Current View
+      Distance: 6
+      Focal Point:
+        X: 1.5
+        Y: 3.5
+        Z: 0
+      Pitch: 0.8
+      Yaw: 3.9
+      Target Frame: <Fixed Frame>
+      Value: Orbit (rviz)
+    Saved: ~
+Window Geometry:
+  Height: 900
+  Width: 1400
