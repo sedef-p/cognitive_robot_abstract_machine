@@ -1,15 +1,11 @@
 """
-The HSR finds a milk carton on the floor with RoboKudo and throws it into the trash can,
-which it finds with RoboKudo as well. The robot knows neither beforehand: RoboKudo looks
-through the simulated head camera, and only what it finds is added to the robot's world.
-
-Run it from this folder, with ROS 2 and the ROS workspace sourced::
+The HSR finds a milk carton on the floor and the trash can with RoboKudo, through its
+simulated head camera, and throws the milk away; only what RoboKudo finds is added to the
+robot's world. Run it from this folder, with ROS 2 and the ROS workspace sourced::
 
     python throw_trash_perception_rviz_demo.py
 
-What the head camera sees is published as point clouds on the topics of
-:class:`CameraViewTopic` while the demo runs. RViz shows them, next to the robot and the
-kitchen, with the configuration beside this file::
+The camera's points are published on :class:`CameraViewTopic`; RViz shows them with::
 
     rviz2 -d throw_trash_perception.rviz
 """
@@ -42,7 +38,9 @@ from coraplex.robot_plans.actions.core.navigation import (
     NavigateAction,
 )
 from coraplex.robot_plans.actions.core.pick_up import PickUpAction
+from coraplex.robot_plans.actions.core.placing import PlaceAction
 from coraplex.robot_plans.actions.core.robot_body import (
+    MoveManipulatorAction,
     MoveTorsoAction,
     ParkArmsAction,
 )
@@ -94,7 +92,8 @@ from semantic_digital_twin.datastructures.camera_rendering import (
     TexturedColorRenderingMode,
 )
 from semantic_digital_twin.datastructures.definitions import TorsoState
-from semantic_digital_twin.robots.robot_parts import AbstractRobot
+from semantic_digital_twin.grasping.grasp_candidates import GraspCandidate
+from semantic_digital_twin.robots.robot_parts import AbstractRobot, Arm
 from semantic_digital_twin.semantic_annotations.semantic_annotations import (
     Milk,
     TrashCan,
@@ -120,7 +119,6 @@ from std_msgs.msg import Header
 # the demo this one builds on lies in the folder above, which is no package
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from throw_trash_rviz_demo import (
-    DropAction,
     FloorSpot,
     FloorToTrashCanDemonstration,
     SceneBody,
@@ -511,6 +509,10 @@ class SimulatedHeadCamera:
     """
 
     def __post_init__(self) -> None:
+        """
+        Gives the head camera of the robot in :attr:`ground_truth` the range and model
+        it is rendered with, and lets RoboKudo look into :attr:`ground_truth`.
+        """
         [true_robot] = self.ground_truth.get_semantic_annotations_by_type(AbstractRobot)
         camera = true_robot.get_default_camera()
         camera.camera_range = CameraRange(minimum_distance=self.camera_minimum_distance)
@@ -760,6 +762,10 @@ class LiveCameraView(StateChangeCallback):
     """
 
     def __post_init__(self) -> None:
+        """
+        Unlike :meth:`StateChangeCallback.__post_init__`, also starts publishing the
+        pictures.
+        """
         super().__post_init__()
         self._thread = threading.Thread(
             target=self._publish_continuously, daemon=True, name="live_camera_view"
@@ -862,6 +868,10 @@ class TakenObjectEraser(StateChangeCallback):
     """
 
     def __post_init__(self) -> None:
+        """
+        Unlike :meth:`StateChangeCallback.__post_init__`, also takes where :attr:`body`
+        is now as where it was seen.
+        """
         self.seen_position = self._body_position()
         super().__post_init__()
 
@@ -921,10 +931,12 @@ class PerceivedFloorToTrashCanDemonstration(FloorToTrashCanDemonstration):
 
         first plan: park the arm, turn to and look at search_spot
         find the milk on the floor, add it as a box of the estimated size
-        second plan: pick the milk up, carry it to approach_distance before
-            trash_can_search_spot, raise the torso and look there
+        second plan: pick the milk up, bring it upright in front of the base, carry it
+            past passage_spot to approach_distance before trash_can_search_spot,
+            raise the torso and look there
         find the trash can, add it as a trash can of the estimated size
-        third plan: drop the milk into the trash can, park the arm and lower the torso
+        third plan: place the milk above the trash can's opening, let go of it, park
+            the arm and lower the torso
     """
 
     trash_can_search_spot: FloorSpot = field(
@@ -949,6 +961,12 @@ class PerceivedFloorToTrashCanDemonstration(FloorToTrashCanDemonstration):
     )
     """
     How the trash can is looked for: bigger than what is picked up, smaller than a sofa.
+    """
+
+    carrying_height: float = 0.6
+    """
+    How high above the floor the milk's origin is carried, in meters, since the trash
+    can, and so the height the milk is let go of at, is not found until later.
     """
 
     camera_view_period: float | None = 1.0
@@ -1002,9 +1020,9 @@ class PerceivedFloorToTrashCanDemonstration(FloorToTrashCanDemonstration):
         """
         :param context: The context of the plan.
         :param milk_spot: Where the milk was found.
-        :return: Picking the milk up, carrying it to :attr:`approach_distance` before
-            :attr:`trash_can_search_spot`, raising the torso and looking there from
-            above, so the camera sees into the trash can.
+        :return: Picking the milk up, carrying it past :attr:`passage_spot` to
+            :attr:`approach_distance` before :attr:`trash_can_search_spot`, raising the
+            torso and looking there from above, so the camera sees into the trash can.
         """
         hsrb = context.require_extension(RobotAccess).robot
         [arm] = hsrb.all_arms
@@ -1015,8 +1033,11 @@ class PerceivedFloorToTrashCanDemonstration(FloorToTrashCanDemonstration):
         lookout_pose = self._compute_standing_pose_facing(
             search_pose, self.approach_distance, milk_spot
         )
+        passage_pose = self._compute_floor_pose_facing(
+            np.array([self.passage_spot.x, self.passage_spot.y]), lookout_pose
+        )
         milk_pose = Pose(reference_frame=milk.root)
-        self._let_robot_touch_the_floor(hsrb)
+        grasp = self._create_grasp_from_above(milk)
         self._let_wrist_touch_the_object(arm, milk.root)
         statechart = Statechart(context=context)
         statechart.add_node(
@@ -1029,12 +1050,14 @@ class PerceivedFloorToTrashCanDemonstration(FloorToTrashCanDemonstration):
                             )
                         ),
                         face_and_look_at=self._face_and_look_at(milk_pose),
-                        pick_up=a(PickUpAction)(
-                            grasp=self._create_grasp_from_above(milk), arm=arm
-                        ),
+                        pick_up=a(PickUpAction)(grasp=grasp, arm=arm),
                     ),
-                    ParkArmsAction(arms=hsrb.all_arms),
-                    FaceAtAction(target=lookout_pose),
+                    self._create_move_to_carrying_pose(hsrb, arm, grasp),
+                    FaceAtAction(target=passage_pose),
+                    CarryAction(
+                        navigate=NavigateAction(target_location=passage_pose),
+                        holding_arms=[arm],
+                    ),
                     CarryAction(
                         navigate=NavigateAction(target_location=lookout_pose),
                         holding_arms=[arm],
@@ -1050,8 +1073,9 @@ class PerceivedFloorToTrashCanDemonstration(FloorToTrashCanDemonstration):
         """
         :param context: The context of the plan, whose robot holds the milk.
         :return: Driving to :attr:`drop_distance` before the trash can, on the side the
-            robot stands, dropping the milk in, parking the arm and lowering the torso,
-            and, in a kinematic simulation, putting the milk onto the trash can's bottom.
+            robot stands, letting go of the milk above the opening, parking the arm and
+            lowering the torso, and, in a kinematic simulation, putting the milk onto
+            the trash can's bottom.
         """
         world = context.world
         hsrb = context.require_extension(RobotAccess).robot
@@ -1062,9 +1086,7 @@ class PerceivedFloorToTrashCanDemonstration(FloorToTrashCanDemonstration):
             :2, 3
         ]
         drop_pose = self._compute_drop_pose(trash_can.root, milk.root)
-        self._let_robot_touch_the_floor(hsrb)
         steps: list[StatechartNode] = [
-            ParkArmsAction(arms=hsrb.all_arms),
             CarryAction(
                 navigate=NavigateAction(
                     target_location=self._compute_standing_pose_facing(
@@ -1076,11 +1098,7 @@ class PerceivedFloorToTrashCanDemonstration(FloorToTrashCanDemonstration):
                 holding_arms=[arm],
             ),
             FaceAtAction(target=drop_pose),
-            DropAction(
-                grasp=self._create_grasp_from_above(milk),
-                arm=arm,
-                release_pose=drop_pose,
-            ),
+            PlaceAction(object_designator=milk, target_location=drop_pose),
             Parallel(
                 nodes=[
                     ParkArmsAction(arms=hsrb.all_arms),
@@ -1100,9 +1118,9 @@ class PerceivedFloorToTrashCanDemonstration(FloorToTrashCanDemonstration):
         statechart.add_node(Sequence(nodes=steps))
         return statechart
 
-    @staticmethod
+    @classmethod
     def _compute_standing_pose_facing(
-        target_pose: Pose, distance: float, approach_side: FloorSpot
+        cls, target_pose: Pose, distance: float, approach_side: FloorSpot
     ) -> Pose:
         """
         :param target_pose: What the robot is to stand before.
@@ -1114,12 +1132,32 @@ class PerceivedFloorToTrashCanDemonstration(FloorToTrashCanDemonstration):
         target_xy = np.array([float(target_pose.x), float(target_pose.y)])
         towards_side = np.array([approach_side.x, approach_side.y]) - target_xy
         standing_xy = target_xy + distance * towards_side / np.linalg.norm(towards_side)
-        facing = target_xy - standing_xy
-        return Pose.from_xyz_rpy(
-            x=standing_xy[0],
-            y=standing_xy[1],
-            yaw=np.arctan2(facing[1], facing[0]),
-            reference_frame=target_pose.reference_frame,
+        return cls._compute_floor_pose_facing(standing_xy, target_pose)
+
+    def _create_move_to_carrying_pose(
+        self, robot: AbstractRobot, arm: Arm, grasp: GraspCandidate
+    ) -> MoveManipulatorAction:
+        """
+        :param robot: The robot carrying the milk.
+        :param arm: The arm holding the milk.
+        :param grasp: The grasp the milk is held by.
+        :return: Bringing the milk upright to :attr:`carrying_reach` in front of the base
+            and :attr:`carrying_height` above the floor, where it stays while the robot
+            drives.
+        """
+        world = robot._world
+        base_height = world.compute_forward_kinematics_np(world.root, robot.root)[2, 3]
+        carrying_pose = Pose.from_xyz_rpy(
+            x=self.carrying_reach,
+            z=self.carrying_height - base_height,
+            reference_frame=robot.root,
+        )
+        return MoveManipulatorAction(
+            target_pose=arm.end_effector.tool_frame_goal_for_grasp(
+                grasp.moved_to(carrying_pose)
+            ),
+            end_effector=arm.end_effector,
+            allow_gripper_collision=False,
         )
 
     def run(self) -> World:

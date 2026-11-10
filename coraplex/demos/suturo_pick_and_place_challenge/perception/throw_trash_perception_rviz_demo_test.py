@@ -31,12 +31,10 @@ def check_milk_is_found_and_thrown_away(
     milk_start: demo.FloorSpot, size_tolerance: float = 0.015
 ) -> None:
     """
-    Run the demo with the milk starting at `milk_start`.
-
-    Check that the milk and the trash can the robot added are about as big as the real
-    ones and the trash can stands where the real one does, that the milk ends upright on
-    the trash can's bottom, with the real milk inside the real trash can, that the
-    points last shown as found are the trash can's, and that the robot ends parked.
+    Run the demo with the milk starting at `milk_start`, and check that the milk and
+    the trash can the robot added match the real ones in size and place, that the milk
+    ends upright on the trash can's bottom, that the points last shown as found are the
+    trash can's, and that the robot ends parked.
 
     :param milk_start: Where the milk stands on the floor before the plan begins.
     :param size_tolerance: How far each estimated extent and position may be off, in
